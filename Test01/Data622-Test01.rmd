@@ -1,0 +1,301 @@
+---
+title: "DATA 622: Test 01"
+author: "Shovan Biswas"
+date: "10/15/2020"
+output:
+  pdf_document: default
+  html_document:
+    highlight: pygments
+    theme: cerulean
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(caret)
+library(ROCR)
+library(e1071)
+library(pROC)
+library(class)
+library(knitr)
+library(ipred)
+```
+
+# (A) Run Bagging (ipred package)                
+#     -- sample with replacement           
+#     -- estimate metrics for a model             
+#     -- repeat as many times as specied and report the average         
+
+Bagging combines "weak" learners in a way that reduces their variance. In Bagging, a set of bootstrap samples are generated. The goal is to train the model and average them in regression and take the majority vote in classification. This makes Bagging parallelizable.           
+
+## Load input dataset.csv              
+```{r MainCode}
+mydata <- read.csv('./dataset.csv', head = TRUE, sep = ',', stringsAsFactors = TRUE)
+head(mydata)
+```
+
+```{r}
+str(mydata)
+```
+
+Converting variable X to factor.  
+```{r}
+mydata$X <- factor(mydata$X)
+```
+
+## Data exploration                   
+```{r}
+print(paste0("Number of observations: ", dim(mydata)[1], "   Number of columns: ", dim(mydata)[2])) 
+```
+
+Ratio of BLACK to BLUE in response variable label. The data is somewhat imbalanced.     
+```{r}
+table(mydata$label)
+```
+
+```{r}
+summary(mydata)
+```
+
+```{r}
+xtabs(~label + X, data = mydata)
+```
+
+```{r}
+xtabs(~label + Y, data = mydata)
+```
+
+## Split dataset      
+
+Splitting the dataset into train and test in 70/30 ratio.       
+
+```{r}
+set.seed(423)
+
+mydata_train_index <- sample(1:nrow(mydata), 0.30 * nrow(mydata), replace = F)
+mydata_train <- mydata[-mydata_train_index, ]
+mydata_test <- mydata[mydata_train_index, ]
+```
+
+```{r}
+summary(mydata_train)
+```
+
+```{r}
+summary(mydata_test)
+```
+
+
+## Bagging model      
+
+```{r}
+start_tm1 <- proc.time()
+
+mydata_train_bag <- bagging(label ~ .,
+                       data = mydata_train,
+                       nbagg = 100,
+                       coob = TRUE)
+
+end_tm1 <- proc.time()
+
+mydata_train_bag
+```
+
+```{r}
+diff_bagging <- end_tm1 - start_tm1
+diff_bagging
+```
+
+
+```{r}
+mydata_test_bag_pred <- predict(mydata_train_bag, mydata_test)
+
+mydata_test_bag_pred_cm <- with(mydata_test, table(mydata_test_bag_pred, label))
+
+cat("Confusion Matrix:")
+cat('\n\n')
+mydata_test_bag_pred_cm
+```
+
+```{r}
+cat("Original  labels:")
+mydata_test$label
+
+cat('\n\n')
+
+cat("Predicted labels:")
+mydata_test_bag_pred
+```
+
+## Now, let's spend a moment on the prediction      
+
+We observe (above) that originally there were 6 BLACKs and 4 BLUEs. The columns of the Confusion Matrix (CM) show the actual labels. So, the first column of CM shows 6 (5 + 1) actual BLACKs and the second column shows 4 (4 + 0) actual BLUEs.         
+
+But these were predicted differently. Out of the 6 actual BLACKs, 5 were predicted as BLACKs and 1 was predicted as BLUE. So, 5 were predicted as TRUE and 1 was predicted as FALSE. This is clearly shown in the CM.      
+
+Out of the 4 actual BLUEs, none (or 0) were predicted as BLACK and 4 were predicted as BLUE. So, none were predicted as FALSE and all 4 were predicted as TRUE. This is clearly supported by the CM.      
+Here's a quick summary of the predictions in the language of TP, TN, FP, FN. Before, I begin, let me state that I decided to call BLACK the positive. So, BLUE is negative.          
+
+(The ideas used in the following, were based on the Confusion Matrix Wiki at https://en.wikipedia.org/wiki/Confusion_matrix)
+
+5 BLACK (P) were predicted as BLACK (P) i.e. 5 positives were predicted as positive. So, it was a True  Positive (TP == 5)
+1 BLACK (P) was  predicted as BLUE  (N) i.e. 1 positive  was  predicted as negative. So, it was a False Negative (FN == 1)
+
+0 BLUE (N)  was  predicted as BLACK (P) i.e. 0 negative  was  predicted as positive. So, it was a False positive (FP == 0)
+4 BLUE (N)  were predicted as BLUE  (N) i.e. 4 negatives were predicted as negative. So, it was a False Negative (TN == 4)
+
+In the following code chink, we'll use this knowledge to compute the rates (tpr, fpr etc).   
+
+```{r}
+acc <- sum(diag(mydata_test_bag_pred_cm)) / sum(mydata_test_bag_pred_cm)
+
+tpr <- mydata_test_bag_pred_cm[1, 1] / (mydata_test_bag_pred_cm[1, 1] + mydata_test_bag_pred_cm[2, 1])
+fpr <- mydata_test_bag_pred_cm[1, 2] / (mydata_test_bag_pred_cm[1, 2] + mydata_test_bag_pred_cm[2, 2])
+fnr <- mydata_test_bag_pred_cm[2, 1] / (mydata_test_bag_pred_cm[2, 1] + mydata_test_bag_pred_cm[1, 1])
+tnr <- mydata_test_bag_pred_cm[2, 2] / (mydata_test_bag_pred_cm[2, 2] + mydata_test_bag_pred_cm[1, 2]) 
+```
+
+```{r}
+auc <- auc(roc(mydata_test_bag_pred, ifelse(mydata_test$label == 'BLUE', 1, 0)))
+```
+
+```{r}
+mydata_test_bag_row <- c("Bagging model ", round(auc, 2), round(acc, 2), round(tpr, 2), round(fpr, 2), round(fnr, 2), round(tnr, 2))
+names(mydata_test_bag_row) <- c("Bagging model ", "AUC", "accuracy", "tpr", "fpr", "fnr", "tnr")
+mydata_test_bag_row
+```
+
+
+# (B) Run LOOCV (jacknife) for the same dataset         
+
+# --- iterate over all points              
+# -- keep one observation as test             
+# -- train using the rest of the observations               
+# -- determine test metrics              
+# -- aggregate the test metrics             
+
+# end of loop             
+# find the average of the test metric(s)                
+# Compare (A), (B) above with the results you obtained in HW-1  and write 3 sentences explaining the               
+# observed difference.                     
+
+LOOCV or Leave-One-Out Cross-Validation procedure is used to estimate the performance of machine learning algorithms when they are used to make predictions on data not used to train the model.    
+
+In this exercise, I used the algorithm that was taught in class M11. However, in heart dataset since **target** field was numeric, and the field **labels** in my current dataset.csv is not numeric, I will substitute mydata_train$labels to binary values 1 or 0 -- 1 for BLACK and 0 for BLUE.                
+
+```{r}
+cat("Current content:")
+mydata_train$label
+```
+
+```{r}
+mydata_train$label <- ifelse(mydata_train$label == 'BLACK', 1, 0)
+```
+
+```{r}
+cat("Content after alteration:")
+mydata_train$label
+```
+
+
+```{r}
+N <- nrow(mydata_train)
+
+start_tm2 <- proc.time()
+
+cv_df <- do.call('rbind', lapply(1:N, FUN = function(idx, data = mydata_train) {
+   
+   
+   m <- naiveBayes(label~., data = data[-idx,])
+   
+
+   p <- predict(m, data[idx, -c(3)], type = 'raw')
+   
+   pc <- unlist(apply(round(p), 1, which.max)) - 1
+   
+   list(fold = idx, m = m, predicted = pc, actual = data[idx, c(3)])
+   }
+))
+
+end_tm2 <- proc.time()
+```
+
+
+```{r}
+diff_LOOCV <- end_tm2 - start_tm2
+diff_LOOCV
+```
+
+
+```{r}
+cv_df
+```
+
+
+```{r}
+cv_df <- as.data.frame(cv_df)
+
+loocv_tbl <- table(as.numeric(cv_df$actual), as.numeric(cv_df$predicted))
+
+(loocv_caret_cfm <- caret::confusionMatrix(loocv_tbl))
+```
+
+
+```{r}
+mydata_test$label <- ifelse(mydata_test$label == 'BLACK', 1, 0)
+
+tstcv.perf <- as.data.frame(do.call('cbind', lapply(cv_df$m, FUN = function(m, data = mydata_test) {
+  v <- predict(m, data[, -c(3)], type = 'raw')
+  lbllist <- unlist(apply(round(v), 1, which.max)) - 1
+}
+  )))
+
+np <- ncol(tstcv.perf)
+
+predclass <- unlist(apply(tstcv.perf, 1, FUN = function(v) {
+   ifelse(sum(v[2:length(v)]) / np < 0.5, 0, 1)
+   }
+))
+
+loocvtbl <- table(mydata_test[, c(3)], predclass)
+
+(loocv_cfm <- caret::confusionMatrix(loocvtbl))
+```
+
+# Stats of Homework01 are as follows:     
+(Please refer my Homework01 at https://github.com/ShovanBiswas/DATA622/blob/main/Homework01/Data621-HomeWork01.pdf)
+
+##        ALGO     AUC ACCURACY   TPR   FPR   TNR   FNR
+## 1   LR_test 0.84375       70 85.71 66.67 33.33 14.29
+## 2   NB_test  0.5625      0.6  62.5    50    50  37.5
+## 3 KNN_test3  0.8125      0.7  62.5     0   100  37.5
+## 4 KNN_test5  0.8125      0.7  62.5     0   100  37.5
+
+
+```{r}
+cat('Bagging model:\n')
+mydata_test_bag_row
+```
+
+
+```{r}
+cat('LOOCV:\n')
+loocv_cfm$overall
+```
+
+# Conclusion       
+
+1) For both Bagging and LOOCV, the accuracies are 0.9.     
+2) The accuracies improved from Homework 01.       
+3) The system time used by both Bagging and LOOCV are almost the same (see below).     
+
+```{r message = FALSE, warning = FALSE, echo = F}
+cat('Bagging:')
+diff_bagging
+
+cat('\n\n')
+
+cat('LOOCV:')
+diff_LOOCV
+```
+
